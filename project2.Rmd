@@ -1,0 +1,968 @@
+---
+title: "Project2"
+author: "Yuanfu CAO 23633858, Yuxin GU 23743373"
+date: "October 21, 2023"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, fig.align = "center", message=FALSE, warning=FALSE)
+```
+
+## Statement  
+Yuanfu CAO 23633858 (50%): all tasks   
+Yuxin GU 23743373 (50%): all tasks
+  
+The video link: https://youtu.be/iu7vnhi3cYA
+   
+Alert: For our Shiny application to run properly, it needs to load all the codes from the document first in order to import the necessary data.
+   
+   
+Loading the libraries.
+```{r library}
+library(ggplot2)
+library(dplyr)
+library(caret)
+library(ROCR)
+library(vtreat)
+library(ggthemes)
+library(hrbrthemes)
+library(knitr)
+library(MASS)
+library(psych)
+library(forecast)
+library(tidyr)
+library(FactoMineR)
+library(factoextra)
+library(glmnet)
+library(rpart)
+library(e1071)
+library(pROC)
+library(crayon)
+library(factoextra)
+library(gridExtra)
+library(fpc)
+library(Rtsne)
+```
+   
+Setting up a plotting theme
+```{r}
+cits4009_theme <- theme_few() + # Theme based on S. Few's "Practical Rules for Using Color in Charts"
+                  theme(plot.title = element_text(color = "darkred")) +
+                  theme(strip.text.x = element_text(size = 14, colour = "#202020")) +
+                  theme(plot.margin=margin(10,30,10,30))
+```
+
+
+Load the main data.
+   
+```{r load-data}
+data.path <- './youtube_UTF_8.csv'
+gdp.data <- './GDP.csv'
+df <- read.csv(data.path)
+gdp <- read.csv(gdp.data, skip = 4)
+```
+
+# Part A - Classification   
+
+## Choose the reponse variable
+   
+Data cleaning for classification.
+
+```{r datacleaning}
+df_clean <- df %>%
+  filter(lowest_yearly_earnings !=0 & highest_monthly_earnings != 0) 
+```
+   
+We removed rows with the lowest annual income and the highest annual income equal to zero from the data, as we believe these are due to missing data incurred during the collection process by the data gatherers. Furthermore, rows where these two variables are zero hold no value to our research, leading us to eliminate them outright.
+   
+Upon reviewing the dataset, we identified that some missing values were entered as 'nan'. Since 'nan' is not the default representation of missing values in R, we converted them to 'NA' to facilitate subsequent data handling.
+```{r replacenan}
+df_clean[is.na(df_clean) | df_clean == "nan"] <- NA
+```
+   
+Quantified the missing values in the 'Country' column.
+```{r countna}
+na_count <- sum(is.na(df_clean$Country))
+na_count
+```
+   
+We attribute the absence of country data to the collection process and determined that removing these values wouldn’t adversely impact our findings. We observed a strong correlation between the missing values in the 'Country' column and those in the 'Gross...", 'Population', 'Unemployment.rate' and 'Urban population' columns. We proceeded to remove rows with 'NA' in the 'Country' column. 
+
+```{r delete-naincountry}
+df_clean <- filter(df_clean,!is.na(Country))
+```
+   
+Only one row with 'NA' for 'Population' and other three columns remained, which we also eliminated to cleanse our dataset thoroughly.
+
+```{r deleteNA2}
+df_clean <- filter(df_clean, !is.na(Population))
+```
+
+The response variable we have chosen is the yearly earnings of youtubers. The variables was present in the database, so we created the variable 'average money' by calculating the average of lowest yearly earnings and highest yearly earnings.
+   
+```{r datacleaning-again}
+df_clean$average_money <- rowMeans(df_clean[, c('lowest_yearly_earnings', 'highest_yearly_earnings')], na.rm = T)
+df_clean$average_money <- df_clean$average_money
+```
+   
+We think using the median of the current data directly as the criterion for dividing high and low income may indeed pose some problems. Since the sample is not random but specific (i.e., only the top 995 YouTubers), this median might not be universal and is not suitable for judging the income level of all YouTubers. On the other hand, using the GDP of the country/region where the YouTuber is located as a reference standard can better reflect the economic level of that area and thereby provide a more reasonable assessment of the YouTuber's income level.
+   
+So we first join the GDP dataframe to the youtuber datafram.
+   
+However, in the GDP dataset, the most recent data for each country is only up to 2022, with some countries having their latest GDP data from 2021. Since the yearly earning data in our youTuber dataset is from 2023, we plan to use the GDP data from 2019 to 2022 to predict each country's GDP for the year 2023.
+```{r leftjoin-dfs}
+select_cols <- c("Country.Name", "X2019", "X2020", "X2021", "X2022")
+data_wide <- gdp[, names(gdp) %in% select_cols]
+
+data_long <- data_wide %>%
+  pivot_longer(cols = -Country.Name, names_to = "year", values_to = "GDP") %>%
+  mutate(year = as.numeric(gsub("X", "",year))) 
+
+data_long <- filter(data_long,!is.na(data_long$GDP))
+```
+   
+We discovered that some countries' names in the GDP dataset differ from those in the YouTuber dataset. We identified these countries and aligned their names accordingly.
+   
+```{r joindfs-pred}
+country_mapping <- data.frame(
+  gdp_country = c("Turkiye", "Korea, Rep.", "Russian Federation", "Egypt, Arab Rep."),
+  youtube_country = c("Turkey", "South Korea", "Russia", "Egypt")
+)
+data_long <- data_long %>%
+  left_join(country_mapping, by = c("Country.Name" = "gdp_country")) %>%
+  mutate(Country.Name = coalesce(youtube_country, Country.Name)) %>%
+  subset(select=-youtube_country)
+
+predictions <- data_long %>%
+  group_by(Country.Name) %>%
+  do(data.frame(Predicted_GDP_2023 = forecast(auto.arima(.$GDP), h = 1)$mean)) 
+```
+   
+   
+We decided to normalize both the average yearly income and the corresponding GDP data to render them dimensionless and comparable on the same scale, aiding in a more accurate and meaningful analysis. The normalization was performed using the z-score formula, which is computed by subtracting the mean and dividing by the standard deviation. This process ensures that both datasets have a mean of 0 and a standard deviation of 1.
+    
+The logic behind this approach is grounded in the need for a consistent basis of comparison between individual income and the economic prosperity of the country they reside in. By converting these variables into z-scores, we neutralize the effects of scale and unit differences, allowing for a direct, meaningful comparison.
+
+```{r znormalize-gdp-earning}
+predictions <- predictions %>% rename("Country"="Country.Name")
+mean_GDP <- mean(predictions$Predicted_GDP_2023, na.rm = TRUE)
+std_GDP <- sd(predictions$Predicted_GDP_2023, na.rm = TRUE)
+predictions$Z_Score_GDP <- (predictions$Predicted_GDP_2023 - mean_GDP) / std_GDP
+
+mean_earning <- mean(df_clean$average_money, na.rm = T)
+std_earning <- sd(df_clean$average_money, na.rm = T)
+df_clean$Z_Score_Income <- (df_clean$average_money - mean_earning) / std_earning
+
+df_new <- merge(df_clean, predictions, by = "Country", all.x = TRUE)
+
+```
+   
+Venezuela contains NA value, and there is no country named "Venezuela" in the GDP table. So we remove "Venezuela".
+```{r delete-Venezuela}
+df_new <- filter(df_new, df_new$Country != "Venezuela")
+```
+   
+    
+Individuals are labeled as "high income" if their income z-score exceeds the GDP z-score. This method is rooted in the notion that those earning significantly above the average income, relative to their country’s economic status, can be classified as high earners. 
+This process ensures that our classification is not only indicative of the individual’s earning but is also contextualized within the economic landscape of their respective country.
+
+```{r compare}
+df_new <- df_new %>%
+  mutate(
+    level_earning = if_else(Z_Score_Income > Z_Score_GDP, "high income", "low income")
+  )
+table(df_new$level_earning)
+```
+   
+Null model:   
+The null model predicts 507 out of 827 individuals as low income.
+   
+
+## Selecting variables
+
+```{r delete-na}
+df_new$category <- ifelse(is.na(df_new$category), df_new$channel_type, df_new$category)
+```
+   
+TEST the NA in the data.
+```{r dfnew-na}
+apply(is.na(df_new), 2, sum)
+```
+   
+Replace NA of "subscriber_for_last_30_days" with the mean of this column.
+```{r deal-na}
+df_new$subscribers_for_last_30_days[is.na(df_new$subscribers_for_last_30_days)] <- mean(df_new$subscribers_for_last_30_days, na.rm = TRUE)
+```
+   
+Conducting the selection of features and target variables, and creating a subset of the data.
+```{r choose-featureswithtarget}
+candidate.columns <-
+  c("subscribers",
+"video.views",
+"category",
+"uploads",
+"Country",
+"subscribers_for_last_30_days",
+"video_views_for_the_last_30_days",
+"created_year",
+"Gross.tertiary.education.enrollment....",
+"Population",
+"Unemployment.rate",
+"Urban_population")
+outcome <- 'level_earning'
+pos.label <- "high income"
+```
+
+Since we used the GDP of individual countries to determine the threshold for binarizing the response variable, we should avoid using 'country' as a feature in subsequent modeling processes.
+   
+```{r data-outcome}
+data <- df_new[, c(outcome, candidate.columns)]
+```
+   
+Identifying numerical data within the selected variables.
+```{r identify-numvars}
+col_num <- which(colnames(data) %in% c("subscribers","uploads","video.views","video_views_for_the_last_30_days", "subscribers_for_last_30_days","created_year","Gross.tertiary.education.enrollment....","Population","Unemployment.rate","Urban_population"))
+```
+   
+Converting the categorical variables to factor.
+```{r convert-factor}
+data[,-col_num] <- lapply(data[,-col_num], factor)
+```
+   
+## Splitting the data   
+
+Divide the dataset into three subsets: training, calibration, and testing.
+```{r split-threeset}
+set.seed(123)
+splitIndex <- createDataPartition(data$level_earning, p=.7, list=F, times = 1)
+dTrain_earning <- data[splitIndex,]
+dTest <- data[-splitIndex,]
+
+splitIndex_2 <- createDataPartition(dTrain_earning$level_earning, p=.75, list = F, times = 1)
+dTrain <- dTrain_earning[splitIndex_2,]
+dCal <- dTrain_earning[-splitIndex_2,]
+```
+   
+Splitting the data into Categorical and Numerical variables.
+```{r split-numcat}
+catVars <- candidate.columns[sapply(dTrain[,candidate.columns],class) %in% c('factor','character')]
+numericVars <- candidate.columns[sapply(dTrain[,candidate.columns],class) %in% c('numeric','integer')]
+```
+```{r show-catvars}
+catVars
+```
+```{r show-numvars}
+numericVars
+```
+   
+    
+### First combination of features using single variable prediction and AUC.    
+Here is a function that is used for Single variable predictions for categorical variables.
+
+```{r calsinglevariablepred-function}
+mkPredC <- function(outCol,varCol,appCol, pos=pos.label) {
+  pPos <- sum(outCol==pos)/length(outCol)
+  naTab <- table(as.factor(outCol[is.na(varCol)]))
+  pPosWna <- (naTab/sum(naTab))[pos]
+  vTab <- table(as.factor(outCol),varCol)
+  pPosWv <- (vTab[pos,]+1.0e-3*pPos)/(colSums(vTab)+1.0e-3)
+  pred <- pPosWv[appCol]
+  pred[is.na(appCol)] <- pPosWna
+  pred[is.na(pred)] <- pPos
+  pred
+}
+
+```
+
+Call the above function, and have predictions of categorical variables.
+```{r pred-categoricalvars}
+for(v in catVars) {
+  pii <- paste('pred',v,sep='')
+  dTrain[,pii] <- mkPredC(dTrain[,outcome], dTrain[,v], dTrain[,v])
+  dCal[,pii] <- mkPredC(dTrain[,outcome], dTrain[,v], dCal[,v])
+  dTest[,pii] <- mkPredC(dTrain[,outcome], dTrain[,v], dTest[,v])
+}
+
+```
+   
+Calculate the AUC of each categorical variable.
+```{r auc-singlecat}
+
+calcAUC <- function(predcol, outcol, pos=pos.label) {
+  perf <- performance(prediction(predcol, outcol==pos),'auc')
+  as.numeric(perf@y.values)
+}
+
+for(v in catVars) {
+  print(v)
+  pii <- paste('pred',v,sep='')
+  aucTrain <- calcAUC(dTrain[,pii],dTrain[,outcome])
+  if(aucTrain>=0.54) {
+    aucCal <- calcAUC(dCal[,pii],dCal[,outcome])
+    print(sprintf(
+      "%s, trainAUC: %4.3f calibrationAUC: %4.3f",
+      pii, aucTrain, aucCal))
+  }
+}
+```
+   
+Here is a function that is used for Single variable predictions for numerical variables.
+```{r num-singlevariablepred}
+mkPredN <- function(outCol,varCol,appCol) {
+  cuts <- unique(as.numeric(quantile(varCol, probs=seq(0, 1, 0.1), na.rm=T)))
+  varC <- cut(varCol, cuts)
+  appC <- cut(appCol, cuts)
+  mkPredC(outCol, varC, appC)
+}
+for(v in numericVars) {
+  pii<-paste('pred',v,sep='')
+  dTrain[,pii] <- mkPredN(dTrain[,outcome], dTrain[,v], dTrain[,v])
+  dTest[,pii] <- mkPredN(dTrain[,outcome], dTrain[,v], dTest[,v])
+  dCal[,pii] <- mkPredN(dTrain[,outcome], dTrain[,v], dCal[,v])
+  aucTrain <- calcAUC(dTrain[,pii],dTrain[,outcome])
+    aucCal<-calcAUC(dCal[,pii],dCal[,outcome])
+    print(sprintf(
+      "%s, trainAUC: %4.3f calibrationAUC: %4.3f",
+      pii,aucTrain,aucCal))
+}
+```
+   
+Draw the frequency plot of variable "preduploads" as an example.
+```{r frequencyplot}
+ggplot(data=dCal) +
+  geom_density(aes(x=preduploads,color=as.factor(level_earning))) +
+  cits4009_theme
+```
+   
+Store all results in a dataframe.
+```{r kablevariables}
+all.vars <- c(catVars, numericVars)
+models.auc <- data.frame(model.type = 'univariate',
+                         model.name = all.vars,
+                         train.auc = sapply(all.vars, function(v){pii <- paste('pred',v,sep=''); calcAUC(dTrain[,pii], dTrain[,outcome])}),
+                         cal.auc = sapply(all.vars, function(v){pii <- paste('pred',v,sep=''); calcAUC(dCal[,pii],dCal[,outcome])}))
+kable(models.auc[order(-models.auc$cal.auc), ])
+```
+We set AUC > 0.7 as a highly correlated signal, we choose the top 5 features as our first combination.
+So our first combination of features is as following: 'subscribers_for_last_30_days','	video_views_for_the_last_30_days' 'Unemployment.rate', 'Urban_population', 'Population', 'Gross.tertiary.education.enrollment....'
+   
+   
+### Second combination of features using LASSO.
+   
+First, we ensure that our categorical variables are properly encoded with one-hot encoding. And scale the numerical variables to have mean = 0 and standard deviation = 1 with z-normalization, as LASSO is sensitive to the scale of input features.   
+ 
+```{r preparing-features}
+dTrain_no_pred <- dTrain[, !grepl("pred", names(dTrain))]
+
+dummies <- dummyVars(~ . -level_earning, data = dTrain_no_pred[, c(catVars, "level_earning")])
+transformed_catVars <- data.frame(predict(dummies, newdata = dTrain_no_pred[, c(catVars, "level_earning")]))
+
+numeric_data <- dTrain_no_pred[, setdiff(names(dTrain_no_pred), c(catVars, "level_earning"))]  
+
+dTrain_transformed <- cbind(transformed_catVars, numeric_data)
+
+```
+   
+LASSO function  
+```{r LASSO-function}
+x <- as.matrix(dTrain_transformed)
+
+y <- ifelse(dTrain$level_earning == "high income", 1, 0)
+
+lasso_model <- cv.glmnet(x, y, alpha = 1)
+print(lasso_model$lambda.min)
+
+coef <- predict(lasso_model, s = "lambda.min", type = "coefficients")
+
+print(coef)
+
+sorted_coef <- sort(coef, decreasing = TRUE)
+top_features <- names(sorted_coef)[1:5]
+print(top_features)
+```
+In a LASSO model, zero coefficients (represented by '.') mean that these features are not contributing to the model at the selected lambda, suggesting that they are not significant predictors. So we drop 'video.views', 'Population', 'uploads', 'unemployment.rate', 'Urban_population'. So for our second combination we have features as following:
+'subscribers', 'category', 'subscribers_for_last_30_days', 'created_year', 'Gross.tertiary.education.enrollment....', 'video_views_for_the_last_30_days'.
+   
+   
+So our two combinations of features are:
+1st:'subscribers_for_last_30_days','video_views_for_the_last_30_days', 'Unemployment.rate', 'Urban_population', 'Population', 'Gross.tertiary.education.enrollment....'
+2nd: 'subscribers', 'category', 'subscribers_for_last_30_days', 'created_year', 'Gross.tertiary.education.enrollment....', 'video_views_for_the_last_30_days'
+   
+   
+# Multiple variables model
+   
+## 1st model: Decision Tree 
+    
+Here is the performance-evaluating function.
+```{r evaluate-function}
+evaluate_performance <- function(predictions, true.values, do.print=TRUE, threshold.value=0.5, pos=pos.label){
+  
+  if(do.print){
+    # ROC plot
+    predObj <- prediction(predictions, true.values)
+    perf <- performance(predObj, "tpr", "fpr")
+    
+    roc.df <- data.frame('fpr'=unlist(perf@x.values),
+                   'tpr'=unlist(perf@y.values),
+                   'threshold'=unlist(perf@alpha.values))
+    
+    p <- ggplot(roc.df, aes(x=fpr, y=tpr))+
+      geom_line() +
+      geom_abline(intercept = 0, slope = 1, linetype='dashed') +
+      cits4009_theme
+    print(p)
+    
+    # prediction distribution plot
+    p <- ggplot(data.frame(predictions=predictions,  true.values=true.values),
+          aes(x=predictions, color=true.values, linetype=true.values)) +
+          geom_density()  + 
+          labs(y = "True Positive Rate", x = "False Positive Rate") +
+      cits4009_theme
+    
+    print(p)
+  }
+}
+
+evaluate_and_log_model <- function(model.type, model.name, predictions.train, true.values.train, predictions.cal, true.values.cal, predictions.test, true.values.test){
+  
+  evaluate_performance(predictions.train, true.values.train, do.print = FALSE)
+  evaluate_performance(predictions.cal, true.values.cal, do.print = TRUE)
+  evaluate_performance(predictions.test, true.values.test, do.print = TRUE)
+}
+```
+
+
+
+```{r DT1}
+calculateMetrics <- function(confusion_matrix) {
+  total <- sum(confusion_matrix)
+  accuracy <- sum(diag(confusion_matrix)) / total
+  precision <- confusion_matrix[2, 2] / sum(confusion_matrix[2, ])
+  recall <- confusion_matrix[2, 2] / sum(confusion_matrix[, 2])
+  f1 <- 2 * ((precision * recall) / (precision + recall))
+  return(list(accuracy = accuracy, precision = precision, recall = recall, f1 = f1))
+}
+
+evaluateModel <- function(model, data, true_labels) {
+  # Make predictions
+  predictions <- predict(model, data, type = "class")
+  
+  # Create a confusion matrix
+  confusion_matrix <- table(predictions, true_labels)
+  
+  metrics <- calculateMetrics(confusion_matrix)
+  
+  return(metrics)
+}
+
+buildDecisionTree <- function(train_data, calibrate_data, test_data, selected_features) {
+  
+  selected_features <- c(selected_features, "level_earning")
+  print(selected_features)
+  
+  train_data <- train_data[, selected_features]
+  print(colnames(train_data))
+  calibrate_data <- calibrate_data[, selected_features]
+  test_data <- test_data[, selected_features]
+
+  for(v in selected_features) {
+    pii <- paste('pred', v, sep='')
+    train_data[, pii] <- mkPredC(train_data[, outcome], train_data[, v], train_data[, v], pos=pos.label)
+    calibrate_data[, pii] <- mkPredC(train_data[, outcome], train_data[, v], calibrate_data[, v], pos=pos.label)
+    test_data[, pii] <- mkPredC(train_data[, outcome], train_data[, v], test_data[, v], pos=pos.label)
+  }
+  formula <- as.formula(paste("level_earning ~", paste(selected_features[-length(selected_features)], collapse = " + ")))
+  # Build the decision tree model using the rpart() function
+  dt_model <- rpart(
+    formula = formula,  # Using all available variables in the dataset
+    data = train_data,
+    method = "class",
+    control = rpart.control(minsplit = 10, cp = 0.01) 
+  )
+  
+  # Print the decision tree model
+  print(dt_model)
+  
+  # Plot the decision tree
+  plot(dt_model, uniform = TRUE, main = "Decision Tree")
+  text(dt_model, use.n = TRUE, all = TRUE, cex = .8)
+  
+  # Make predictions on the calibration dataset and evaluate the model
+  dt_predictions <- predict(dt_model, calibrate_data, type = "class")
+  dt_probabilities <- predict(dt_model, calibrate_data, type = "prob")
+  confusion_matrix <- table(dt_predictions, calibrate_data$level_earning)
+  print(confusion_matrix)
+  
+  
+  calculateMetrics(confusion_matrix)
+  
+  
+  str(dt_probabilities)
+  print(levels(calibrate_data$level_earning))
+  
+  # Calculate normalized deviance
+ high_idx <- which(levels(calibrate_data$level_earning) == "high income")
+  low_idx <- which(levels(calibrate_data$level_earning) == "low income")
+  
+  high_prob <- dt_probabilities[calibrate_data$level_earning == "high income", high_idx]
+  low_prob <- dt_probabilities[calibrate_data$level_earning == "low income", low_idx]
+  
+  nd <- -2 * (sum(log(high_prob)) + sum(log(1 - low_prob)))
+  cat("Normalized Deviance:", nd, "\n")
+  # Make predictions on the test dataset
+  test_dt_predictions <- predict(dt_model, test_data, type = "class")
+  
+  return(list(
+    model = dt_model,
+    test_dt_predictions = test_dt_predictions
+  ))
+}
+
+```
+   
+Then we apply the decision tree model function to the two combinations of features.
+   
+Decision Tree Model of the first combination.
+```{r DTmodel1}
+features_group1 <- c('subscribers_for_last_30_days','video_views_for_the_last_30_days', 'Unemployment.rate', 'Urban_population', 'Population', 'Gross.tertiary.education.enrollment....')
+result1 <- buildDecisionTree(dTrain, dCal, dTest, features_group1)
+
+# Extract probabilities
+dt_train_probabilities1 <- predict(result1$model, dTrain, type = "prob")
+dt_cal_probabilities1 <- predict(result1$model, dCal, type = "prob")
+dt_test_probabilities1 <- predict(result1$model, dTest, type = "prob")
+
+# Assume the positive class is the second column
+dt_train_predictions1 <- dt_train_probabilities1[, 2]
+dt_cal_predictions1 <- dt_cal_probabilities1[, 2]
+dt_test_predictions1 <- dt_test_probabilities1[, 2]
+
+# Evaluate and log model performance using the evaluate_and_log_model function
+evaluation_result1 <- evaluate_and_log_model(
+  predictions.train = dt_train_predictions1, 
+  true.values.train = dTrain$level_earning, 
+  predictions.cal = dt_cal_predictions1, 
+  true.values.cal = dCal$level_earning,
+  predictions.test = dt_test_predictions1, 
+  true.values.test = dTest$level_earning
+)
+
+print(evaluation_result1)
+```
+   
+Evaluate the performance of the first DT model.
+```{r auc-dtmodel1}
+roc_obj_dt_train1 <- roc(dTrain$level_earning, dt_train_predictions1, levels=rev(levels(dTrain$level_earning)))
+auc_dt_train1 <- auc(roc_obj_dt_train1)
+cat("Training AUC using ROCR: ", auc_dt_train1, "\n")
+
+roc_obj_dt_cal1 <- roc(dCal$level_earning, dt_cal_predictions1, levels=rev(levels(dCal$level_earning)))
+auc_dt_cal1 <- auc(roc_obj_dt_cal1)
+cat("Calibration AUC using ROCR: ", auc_dt_cal1, "\n")
+
+roc_obj_dt_test1 <- roc(dTest$level_earning, dt_test_predictions1, levels=rev(levels(dTest$level_earning)))
+auc_dt_test1 <- auc(roc_obj_dt_test1)
+cat("Test AUC using ROCR: ", auc_dt_test1, "\n")
+
+dtauc_model1 <- c(auc_dt_train1, auc_dt_cal1, auc_dt_test1)
+print(dtauc_model1)
+```
+Training AUC: 0.9758784 indicates that Model 1 possesses a high degree of discriminatory power, adeptly distinguishing between the two classes in the training dataset. This underscores that the model has effectively learned the patterns embedded within the training data. 
+Calibration AUC: 0.9225852, though lower than the training AUC, still constitutes a commendable score. It signifies the model's proficient generalization capabilities, but the decrease in AUC in the calibration set infers a potential overfitting to a certain extent. 
+Test AUC: 0.9744038 is also remarkable, nearly matching the training AUC, underscoring the model’s exceptional performance on unseen data and exhibiting strong generalization skills.
+   
+   
+Desicion Tree Model of the Second combination.
+```{r dtmodel-feature2}
+features_group2 <- c('subscribers', 'category', 'subscribers_for_last_30_days', 'created_year', 'Gross.tertiary.education.enrollment....', 'video_views_for_the_last_30_days')
+result2 <- buildDecisionTree(dTrain, dCal, dTest, features_group2)
+
+# Extract probabilities
+dt_train_probabilities2 <- predict(result2$model, dTrain, type = "prob")
+dt_cal_probabilities2 <- predict(result2$model, dCal, type = "prob")
+dt_test_probabilities2 <- predict(result2$model, dTest, type = "prob")
+
+# Assume the positive class is the second column
+dt_train_predictions2 <- dt_train_probabilities2[, 2]
+dt_cal_predictions2 <- dt_cal_probabilities2[, 2]
+dt_test_predictions2 <- dt_test_probabilities2[, 2]
+
+# Evaluate and log model performance using the evaluate_and_log_model function
+evaluation_result2 <- evaluate_and_log_model(
+  predictions.train = dt_train_predictions2, 
+  true.values.train = dTrain$level_earning, 
+  predictions.cal = dt_cal_predictions2, 
+  true.values.cal = dCal$level_earning,
+  predictions.test = dt_test_predictions2, 
+  true.values.test = dTest$level_earning
+)
+
+print(evaluation_result2)
+```
+
+```{r auc-dtmodel2}
+roc_obj_dt_train2 <- roc(dTrain$level_earning, dt_train_predictions2, levels=rev(levels(dTrain$level_earning)))
+auc_dt_train2 <- auc(roc_obj_dt_train2)
+cat("Training AUC using ROCR: ", auc_dt_train2, "\n")
+
+roc_obj_dt_cal2 <- roc(dCal$level_earning, dt_cal_predictions2, levels=rev(levels(dCal$level_earning)))
+auc_dt_cal2 <- auc(roc_obj_dt_cal2)
+cat("Calibration AUC using ROCR: ", auc_dt_cal2, "\n")
+
+roc_obj_dt_test2 <- roc(dTest$level_earning, dt_test_predictions2, levels=rev(levels(dTest$level_earning)))
+auc_dt_test2 <- auc(roc_obj_dt_test2)
+cat("Test AUC using ROCR: ", auc_dt_test2, "\n")
+
+dtauc_model2 <- c(auc_dt_train2, auc_dt_cal2, auc_dt_test2)
+print(dtauc_model2)
+```
+   
+Training AUC: 0.9721108. The model shows a high performance on the training set, demonstrating that it has learned the patterns in the training data effectively. However, there may be potential overfitting when a model performs exceptionally well on the training set.
+Calibration AUC: 0.9281656. The AUC score on the calibration set is slightly lower than that on the training set but still very good, indicating the model has good generalization capabilities. The drop in AUC from the training to calibration set is normal and is often attributed to the model being tailored to the training data.
+Test AUC: 0.9700863. This high AUC score, almost comparable to the training AUC, demonstrates the model’s ability to generalize effectively to unseen data. It validates the robustness of the model, confirming that it’s not just overfitting the training data.
+   
+   
+Evaluate the performances of above two DT models.
+```{r evaluation-dtmodel}
+train_metrics1 <- evaluateModel(result1$model, dTrain, dTrain$level_earning)
+train_metrics2 <- evaluateModel(result2$model, dTrain, dTrain$level_earning)
+cal_metrics1 <- evaluateModel(result1$model, dCal, dCal$level_earning)
+test_metrics1 <- evaluateModel(result1$model, dTest, dTest$level_earning)
+cal_metrics2 <- evaluateModel(result2$model, dCal, dCal$level_earning)
+test_metrics2 <- evaluateModel(result2$model, dTest, dTest$level_earning)
+
+# Create a summary data frame
+summary <- data.frame(
+  Model = rep(paste0("Model ", 1:2), each=4),
+  Metric = rep(c("Accuracy", "Precision", "Recall", "F1 Score"), 2),
+  Train_Set = c(unlist(train_metrics1), unlist(train_metrics2)),
+  Calibration_Set = c(unlist(cal_metrics1), unlist(cal_metrics2)),
+  Test_Set = c(unlist(test_metrics1), unlist(test_metrics2))
+)
+new_summary <- summary %>%
+  pivot_longer(cols = c(Train_Set, Calibration_Set, Test_Set), 
+               names_to = "Set", 
+               values_to = "Value") %>%
+  pivot_wider(names_from = Metric, values_from = Value)
+
+new_summary$Set <- gsub("_Set", " Set", new_summary$Set)
+
+
+print(new_summary)
+
+```
+   
+Decision Tree Model 1:
+For the training set, an accuracy of 0.9770115 indicates excellent model performance. A precision of 0.9741697 highlights the model's accuracy in classifying the positive class with a low false positive rate. A recall of 0.9887640 signifies nearly all positive instances were identified. An F1 score of 0.9814126 confirms the model's outstanding overall performance.
+
+On the calibration set, the model maintains high performance with an accuracy of 0.9305556, though slightly lower than the training set. A precision of 0.9333333 and a recall of 0.9545455 affirm the model's effectiveness in identifying the positive class. The F1 score of 0.9438202 attests to a well-balanced precision and recall.
+
+For the test set, an accuracy of 0.9717742 demonstrates the model's excellent generalization to unseen data. Both precision (0.9738562) and recall (0.9802632) are high, indicating effective identification and classification of positive instances. The F1 score of 0.9770492 underscores the model's balanced and exceptional performance in precision and recall.
+   
+Decision Tree Model 2: 
+For the training set, an accuracy of 0.9678161 reflects the model's impressive capability to classify instances accurately. A precision of 0.9667897 underscores its adeptness at minimizing false positives while classifying the positive class. The recall of 0.9812734 indicates the model’s effectiveness in capturing almost all positive instances. An F1 score of 0.9739777 corroborates the balanced and exceptional performance in both precision and recall.
+
+Transitioning to the calibration set, the model sustains its commendable performance with an accuracy of 0.9236111, albeit a slight dip from the training set metrics. Precision at 0.9230769 and recall at 0.9545455 underscore the model’s capability to effectively pinpoint positive instances, ensuring fewer false negatives and positives. An F1 score of 0.9385475 bears testimony to the equilibrium struck between precision and recall, vouching for the model's reliable performance.
+
+In the context of the test set, the model illustrates its adept generalization skills with an accuracy of 0.9556452, highlighting its robustness on unseen data. Precision, marked at 0.9607843, and recall, standing at 0.9671053, both denote the model’s efficacy in identifying and categorizing positive instances with minimal error. The F1 score of 0.9639344 further accentuates the balanced excellence in the dual facets of precision and recall, underlining the model's reliability and effectiveness.
+   
+   
+## 2nd model: SVM (Support Vector Machine)
+
+SVM excels in high-dimensional spaces and possesses robust resistance to overfitting in such environments, thus we have chosen it as our second multivariate model.
+   
+The first SVM mode.
+```{r svm-model1}
+
+#SVM model
+svm_model1 <- svm(level_earning ~ ., 
+                 data = dTrain[, c(features_group1, "level_earning")], 
+                 kernel = "radial",
+                 probability = TRUE) 
+
+print(svm_model1)
+```
+   
+Doing predictions and get the confusion matrix of SVM model 1.
+```{r confusionmatrix1}
+svm_train_predictions1 <- predict(svm_model1, dTrain[, features_group1])
+
+# The confusion matrix on training set
+cm_train1 <- table(svm_train_predictions1, dTrain$level_earning)
+cat("Confusion Matrix on Training Set:\n")
+print(cm_train1)
+
+svm_test_predictions1 <- predict(svm_model1, dTest[, features_group1])
+
+#The confusion matrix1
+cm_test1 <- table(svm_test_predictions1, dTest$level_earning)
+print(cm_test1)
+```
+   
+   
+The second SVM model.
+```{r svm-model2}
+
+
+#The second combination features
+svm_model2 <- svm(level_earning ~ ., 
+                 data = dTrain[, c(features_group2, "level_earning")], 
+                 kernel = "radial"
+                 ,probability = TRUE)
+
+print(svm_model2)
+```
+   
+Doing predictions and get the confusion matrix of SVM model 2.
+```{r confusionmatrix2}
+svm_train_predictions2 <- predict(svm_model2, dTrain[, features_group2])
+
+# The confusion matrix on training set
+cm_train2 <- table(svm_train_predictions2, dTrain$level_earning)
+cat("Confusion Matrix on Training Set:\n")
+print(cm_train2)
+
+svm_test_predictions2 <- predict(svm_model2, dTest[, features_group2])
+#The confusion matrix
+cm_test2 <- table(svm_test_predictions2, dTest$level_earning)
+print(cm_test2)
+```
+
+Evaluate the performance of these two SVM models:
+```{r svmperformance}
+metrics_train1 <- calculateMetrics(cm_train1)
+metrics_test1 <- calculateMetrics(cm_test1)
+metrics_train2 <- calculateMetrics(cm_train2)
+metrics_test2 <- calculateMetrics(cm_test2)
+
+
+results_df <- data.frame(
+  Model = rep(c("Model 1", "Model 2"), each = 2),
+  DataSet = rep(c("Training", "Test"), times = 2),
+  Accuracy = c(metrics_train1$accuracy, metrics_test1$accuracy, metrics_train2$accuracy, metrics_test2$accuracy),
+  Precision = c(metrics_train1$precision, metrics_test1$precision, metrics_train2$precision, metrics_test2$precision),
+  Recall = c(metrics_train1$recall, metrics_test1$recall, metrics_train2$recall, metrics_test2$recall),
+  F1_Score = c(metrics_train1$f1, metrics_test1$f1, metrics_train2$f1, metrics_test2$f1)
+)
+
+print(results_df)
+```
+   
+Evaluate the AUC of these two SVM models.
+```{r auc-svm}
+#predictions in train set
+svm_train_probabilities1 <- predict(svm_model1, dTrain, probability = TRUE)
+svm_train_probabilities1 <- attr(svm_train_probabilities1, "probabilities")
+svm_train_predictions1 <- svm_train_probabilities1[, 2]
+
+svm_train_probabilities2 <- predict(svm_model2, dTrain, probability = TRUE)
+svm_train_probabilities2 <- attr(svm_train_probabilities2, "probabilities")
+svm_train_predictions2 <- svm_train_probabilities2[, 2]
+
+#prediction in test set
+svm_probabilities1 <- predict(svm_model1, dTest, probability = TRUE)
+svm_probabilities1 <- attr(svm_probabilities1, "probabilities")
+svm_probabilities2 <- predict(svm_model2, dTest, probability = TRUE)
+svm_probabilities2 <- attr(svm_probabilities2, "probabilities")
+svm_predictions1 <- svm_probabilities1[, 2]
+svm_predictions2 <- svm_probabilities2[, 2]
+
+# Calculate the AUC of the first SVM model with 'pROC' package
+#train auc
+roc_obj_train1 <- roc(dTrain$level_earning, svm_train_predictions1, levels=rev(levels(dTrain$level_earning)))
+auc_train1 <- auc(roc_obj_train1)
+cat("Training Model 1 AUC using pROC: ", auc_train1, "\n")
+
+#test auc
+roc_obj1 <- roc(dTest$level_earning, svm_predictions1, levels=rev(levels(dTest$level_earning)))
+auc1 <- auc(roc_obj1)
+cat("Testing Model 1 AUC using ROCR: ", auc1, "\n")
+
+# Calculate the AUC of the second SVM model
+#train auc
+roc_obj_train2 <- roc(dTrain$level_earning, svm_train_predictions2, levels=rev(levels(dTrain$level_earning)))
+auc_train2 <- auc(roc_obj_train2)
+cat("Training Model 2 AUC using pROC: ", auc_train2, "\n")
+
+#test auc
+roc_obj2 <- roc(dTest$level_earning, svm_predictions2, levels=rev(levels(dTest$level_earning)))
+auc2 <- auc(roc_obj2)
+cat("Testing Model 2 AUC using ROCR: ", auc2, "\n")
+
+
+```
+   
+SVM Model 1
+   
+Training AUC (0.9794676):
+This near-perfect AUC score on the training data indicates that Model 1 has an excellent ability to distinguish between the classes. It has learned the training data patterns very well, suggesting a high level of model accuracy.
+However, caution is needed to ensure it's not too finely tuned to the training data, which could lead to overfitting.
+   
+Testing AUC (0.986568):
+An even higher AUC score on the testing data is a strong indicator of the model's outstanding generalization ability. It shows that Model 1 not only learned the training data effectively but also generalized well to unseen data.
+It's quite rare to see the testing AUC higher than the training AUC, so it's a positive indicator of the model's robust performance and reliability.
+
+SVM Model 2
+   
+Training AUC (0.9629927):
+Although slightly lower than Model 1, this is still a very high AUC, indicating that Model 2 is also highly effective in class separation. It suggests good model learning but slightly less perfect than Model 1.
+This lower training AUC, compared to Model 1, could potentially indicate less risk of overfitting and might perform more consistently across varied datasets.
+
+Testing AUC (0.9722451):
+The testing AUC is higher than the training AUC, similar to Model 1, indicating excellent model generalization. The model has effectively applied learned patterns from the training data to unseen data.
+The performance is slightly less optimal than Model 1 but still indicates a strong and reliable model.
+   
+
+Model 1 has a slightly better performance in terms of AUC, both in training and testing phases. This indicates a more refined learning and generalization ability.
+However, Model 2 also shows strong results and might be a preferred choice if there are concerns about over-complexity or overfitting with Model 1.
+   
+   
+# Part B - Clustering
+   
+## Best K Value   
+
+We select the numerical variables from the raw dataset, and drop some columns.
+This dataset for clustering is different from the dataset we use for classification.
+```{r}
+data_for_clustering <- df_new[, sapply(df_new, is.numeric)]
+
+columns_to_remove <- c('average_money', 'Z_Score_Income', 'Predicted_GDP_2023', 'Z_Score_GDP', 'level_earning', 'country_rank', 'video_views_rank', 'channel_type_rank', 'rank', 'created_date', 'Latitude','Longitude')
+data_for_clustering <- data_for_clustering[, !names(data_for_clustering) %in% columns_to_remove]
+
+```
+
+Then we scale the selecting variables.
+```{r data-scale}
+scaled_df <- scale(data_for_clustering)
+```
+   
+Find the best k values using WSS plot.
+
+```{r}
+fviz_nbclust(scaled_df, kmeans, method = "wss")
+```
+From the plot, we look for the 'elbow' or the point where the curve starts to level off, as this suggests that adding more clusters doesn't significantly reduce the total within-cluster sum of squares (WSS). After k=4, the rate of decrease in WSS slows down and the curve begins to flatten. Therefore, based on the 'elbow method', the optimal k value is 4.
+   
+   
+```{r centerofclusters}
+k_best <- 4
+
+set.seed(123)  
+km_result <- kmeans(scaled_df, centers = k_best, nstart = 25)
+
+print(km_result$centers)
+```
+
+Cluster 1 has slightly below-average subscribers and video views, paired with a modest number of uploads. While its monthly and yearly earnings, as well as video views for the last 30 days, are on the lower side, the tertiary education enrollment is also below average. This cluster stands out with a much lower population and urban population, and a noticeably reduced unemployment rate.
+
+Cluster 2, on the other hand, showcases a significantly higher number of subscribers and video views. It not only has a higher upload count but also boasts extremely high monthly and yearly earnings and video views for the last 30 days. While its tertiary education enrollment is just a touch below average, it has a slightly higher population and urban population, and its unemployment rate is near average.
+
+Cluster 3 presents near-average subscribers, though its video views are slightly lower. With an increased upload count and average earnings, it manages to maintain standard video views for the last 30 days. However, it's marked by a drastically low tertiary education enrollment, counterbalanced by a very high population and urban population. The unemployment rate in this cluster is also reduced.
+
+Lastly, Cluster 4, similar to Cluster 1, has slightly below-average subscribers and video views, but it diverges with its decreased upload count. Its monthly and yearly earnings, and video views for the past month, are low. Interestingly, it has an elevated tertiary education enrollment and a high unemployment rate, yet its population remains below average and its urban population is near the median.
+
+In summary, Cluster 2 seems to represent high-performing entities in terms of subscribers, views, and earnings, while Cluster 1 is at the opposite end. Clusters 3 and 4 have their unique characteristics, with Cluster 3 having high population figures and Cluster 4 having higher tertiary education enrollment.
+   
+   
+Then append the clustering results to the 'data_for_clustering', assigning cluster labels to each observation.
+```{r cbind-clusteroutcome}
+df_cluster <- cbind(data_for_clustering, cluster = as.factor(km_result$cluster))
+```
+
+```{r count-cluster}
+table(km_result$cluster)
+```
+The clustering results indicate that there are four clusters. Cluster 1 has 272 observations, Cluster 2 contains 45 observations, Cluster 3 has 152 observations, and Cluster 4 is the largest with 358 observations.   
+The distribution of observations across the four clusters varies. Cluster 4 is the most populous, suggesting it captures a common pattern or group within the data. In contrast, Cluster 2 has the fewest observations, indicating it might represent a more specific or unique group. The varying sizes of the clusters suggest that there are distinct patterns or characteristics in the data that are being captured by the k-means clustering process.   
+   
+
+```{r}
+aggregate(.~cluster, data = df_cluster, mean)
+```
+   
+Cluster 1 channels, which average around 21.1 million subscribers, have garnered close to 9.96 billion video views with roughly 11,967 video uploads. In the recent month, they've attracted about 106.8 million views, translating to monthly earnings of $26,703 and an annual range between $427,164 and $3,206,814.9. With an addition of 301,055 subscribers in the last month, these channels, mostly created in 2012, target regions that have a 58.8% tertiary education enrollment, a population nearing 89 million, a commendable unemployment rate of 5%, and an urban populace of 61.3 million.
+
+Cluster 2 showcases the powerhouses, boasting an impressive average of 50.9 million subscribers. They've managed to amass a staggering 41.02 billion video views and have remained quite active with 26,901 uploads. The past month has seen them rake in an incredible 1.16 billion video views, hinting at their lucrative monthly earnings of $290,193 and an annual bracket of $4,637,777.8 to $34,733,333.3. With a substantial growth of 1,527,982 subscribers recently, these channels, mainly originating from 2014, cater to regions with a 58.6% tertiary education rate, a hefty population of 527.6 million, an 8.9% unemployment rate, and an urban count of 251.7 million.
+
+Cluster 3 channels maintain a steady average of 21.8 million subscribers. They've achieved around 9.47 billion video views, supported by their 20,356 uploads. Their last month's performance noted a decent 144.7 million views, pointing to their monthly earnings of $36,180 and an annual range from $578,129 to $4,338,355.5. Growing by 335,535 subscribers in the last 30 days, these channels, which predominantly began their journey in 2014, appeal to regions marked by a drastically low 28.2% tertiary education enrollment, a colossal population of 1.36 billion, a 5.35% unemployment rate, and a massive urban dwellers count of 473.5 million.
+
+Cluster 4 channels, averaging similar numbers to Cluster 1 with 21.1 million subscribers, have an overall video view count of about 9.57 billion. However, they're less prolific with only 3,856 videos uploaded, drawing around 93.8 million views in the past month. Their estimated monthly earnings rest at $23,457, and their annual income floats between $375,250.5 and $2,816,247.7. Adding 266,486 subscribers recently, these channels, hailing mainly from 2011, direct their content to regions characterized by a high 82.6% tertiary education enrollment, a sizable population of 292.4 million, a concerning unemployment rate of 14.24%, and an urban tally of 242.3 million.
+   
+   
+## Clustering Plot   
+
+We employed two dimensionality reduction techniques, PCA and t-SNE, each bringing its unique strengths to the table. PCA serves as a powerful tool for understanding the primary sources of variance in the data. It helps to grasp the overarching data structure and main directions of variation, even though it may not always offer the sharpest cluster distinction. On the other hand, t-SNE excels at capturing non-linear structures, providing a visualization that often reveals clearer separations between clusters. This capability makes t-SNE invaluable for discerning intricate relationships between different clusters. By harnessing the combined insights from both PCA and t-SNE, we aim to gain a more comprehensive and nuanced understanding of our data.
+```{r plot-clustering}
+#PCA 
+pca_result <- prcomp(df_cluster[, -ncol(df_cluster)], scale = TRUE)
+pca_data <- as.data.frame(pca_result$x[, 1:2])
+pca_data$cluster <- df_cluster$cluster
+
+ggplot(pca_data, aes(x = PC1, y = PC2, color = cluster)) +
+  geom_point() +
+  theme_minimal()
+
+tsne_result <- Rtsne(df_cluster[, -ncol(df_cluster)], dims = 2, perplexity = 30, verbose = TRUE, max_iter = 500)
+tsne_data <- as.data.frame(tsne_result$Y)
+tsne_data$cluster <- df_cluster$cluster
+
+ggplot(tsne_data, aes(x = V1, y = V2, color = cluster)) +
+  geom_point() +
+  theme_minimal()
+```
+   
+In the PCA graph, we used the first two main parts, PC1 and PC2, to show our clusters. We see that Cluster 1 (in red) is by itself on the right, which means it's different from the other clusters. Clusters 2, 3, and 4 (in green, blue, and purple) mix together a lot, especially the last two. This might mean they have some things in common based on these main parts.
+   
+Turning our attention to the t-SNE plot, a more nuanced technique for visualizing clusters, we get a clearer picture of separation. All the clusters look different from each other in this graph. Cluster 1 (in red) looks like a curve, showing it has a special pattern. Cluster 2 (in green) spreads out but is still different from the others. Clusters 3 and 4 (in blue and purple) twist around each other, which means they might be hard to tell apart with just two parts.
+   
+The PCA plot suggests a clear distinction for Cluster 1, but there's some overlap among Clusters 2, 3, and 4. On the other hand, the t-SNE plot offers a more separated view of all the clusters, emphasizing the subtle differences among Clusters 3 and 4. Given these visuals, when interpreting the clusters' characteristics, it's essential to understand that Clusters 3 and 4, while distinct, may share more similarities than Clusters 1 or 2 compared to the rest.
+   
+   
+Here are the plots of different k-value.
+```{r plot-differentKvalue}
+k_values <- 2:5
+
+plots_list <- lapply(k_values, function(k) {
+  set.seed(123)
+  km_result <- kmeans(scaled_df, centers = k, nstart = 25)
+  df_cluster <- cbind(data_for_clustering, cluster = as.factor(km_result$cluster))
+  
+  # PCA
+  pca_result <- prcomp(df_cluster[, -ncol(df_cluster)], scale = TRUE)
+  pca_data <- as.data.frame(pca_result$x[, 1:2])
+  pca_data$cluster <- df_cluster$cluster
+  
+  pca_plot <- ggplot(pca_data, aes(x = PC1, y = PC2, color = cluster)) +
+    geom_point() +
+    labs(title = paste("PCA for k =", k)) +
+    theme_minimal()
+
+  # t-SNE
+  tsne_result <- Rtsne(df_cluster[, -ncol(df_cluster)], dims = 2, perplexity = 30, verbose = TRUE, max_iter = 500)
+  tsne_data <- as.data.frame(tsne_result$Y)
+  tsne_data$cluster <- df_cluster$cluster
+
+  tsne_plot <- ggplot(tsne_data, aes(x = V1, y = V2, color = cluster)) +
+    geom_point() +
+    labs(title = paste("t-SNE for k =", k)) +
+    theme_minimal()
+  
+  list(pca_plot, tsne_plot)
+})
+
+# Display plots
+plots_list
+
+```
+   
+   
+   
+# Conclusion
+   
+In our in-depth analysis of YouTube channels, we embarked on a classification task initially. The objective was to predict a YouTuber's 'earning level' based on their annual average income in relation to the projected GDP of their home country for the year 2023 (forecasted using data from 2019 to 2022). This classification categorized YouTubers into two classes: 'high income' and 'low income'.   
+For the classification, we first identified a set of features using the AUC from single-variable predictions and a second set through the LASSO method. With these two feature sets in hand, we constructed predictive models using both Decision Trees and SVMs. In total, we built four distinct models—two for each feature set. Each model showcased robust performance, with AUC and accuracy assessments reflecting their reliable predictive capabilities.   
+Beyond classification, we delved into clustering. Utilizing k-means clustering techniques, we segmented YouTube channels into distinct groups based on an array of metrics, including subscriber counts, video views, and socio-economic indicators. Visualization aids like PCA and t-SNE provided an in-depth view of the relationships between these clusters.   
+In summary, this study offers a holistic view of YouTube channel behaviors by combining both classification and clustering approaches. We successfully predicted income levels based on modern economic indicators and gained an overarching understanding of channel dynamics. These insights are invaluable for content creators, advertisers, and platform strategists, paving the way for audience-targeted content and marketing endeavors.
+
+

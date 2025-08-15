@@ -1,0 +1,358 @@
+---
+title: "Shiny for project2"
+author: "Yuanfu CAO 23633858, Yuxin GU 23743373"
+date: "2023-10-21"
+output: html_document
+runtime: shiny
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(ggplot2)
+library(shiny)
+library(shinyjs)
+
+```
+
+
+## Input and Output
+
+```{r inputoutput, echo=FALSE}
+
+Single_variables <- data.frame(
+  model.type = c(
+    "Country",
+    "Unemployment.rate",
+    "Urban_population",
+    "Population",
+    "Gross.tertiary.education.enrollment….",
+    "subscribers_for_last_30_days",
+    "video_views_for_the_last_30_days",
+    "uploads",
+    "category",
+    "created_year",
+    "subscribers",
+    "video.views"
+  ),
+  model.name = rep("univariate", 12),
+  train.auc = c(
+    0.9472200,
+    0.8939495,
+    0.8777644,
+    0.8382379,
+    0.8916310,
+    0.7287096,
+    0.7411940,
+    0.6339955,
+    0.6544721,
+    0.6808677,
+    0.5919721,
+    0.6517746
+  ),
+  cal.auc = c(
+    0.9664164,
+    0.9316153,
+    0.9113231,
+    0.8999594,
+    0.8901177,
+    0.7645089,
+    0.7282873,
+    0.6817167,
+    0.6420455,
+    0.6066356,
+    0.6018669,
+    0.5765016
+  )
+)
+Decision_Tree <- data.frame(
+  Model = c(rep("Model 1", 3), rep("Model 2", 3)),
+  Set = c(
+    "Train Set",
+    "Calibration Set",
+    "Test Set",
+    "Train Set",
+    "Calibration Set",
+    "Test Set"
+  ),
+  Accuracy = c(
+    0.9770115,
+    0.9305556,
+    0.9717742,
+    0.9678161,
+    0.9236111,
+    0.9556452
+  ),
+  Precision = c(
+    0.9741697,
+    0.9333333,
+    0.9738562,
+    0.9667897,
+    0.9230769,
+    0.9607843
+  ),
+  Recall = c(
+    0.9887640,
+    0.9545455,
+    0.9802632,
+    0.9812734,
+    0.9545455,
+    0.9671053
+  ),
+  F1_Score = c(
+    0.9814126,
+    0.9438202,
+    0.9770492,
+    0.9739777,
+    0.9385475,
+    0.9639344
+  )
+)
+
+
+SVM <- data.frame(
+  Model = c(rep("Model 1", 2), rep("Model 2", 2)),
+  DataSet = c("Training", "Test", "Training", "Test"),
+  Accuracy = c(0.9218391, 0.9153226, 0.9103448, 0.9032258),
+  Precision = c(0.9087719, 0.9171975, 0.9285714, 0.9266667),
+  Recall = c(0.9700375, 0.9473684, 0.9250936, 0.9144737),
+  F1_Score = c(0.9384058, 0.9320388, 0.9268293, 0.9205298)
+  
+)
+
+# Define UI
+ui <- fluidPage(
+  shinyjs::useShinyjs(),
+  titlePanel("Visualization Models"),
+  sidebarLayout(
+    sidebarPanel(
+      selectInput(
+        "plot_type",
+        "Difference of Plot (Please choose first):",
+        choices = c(
+          "Histogram",
+          "Scatter Plot for Decision Tree",
+          "Scatter Plot for SVM",
+          "Clustering"
+        )
+      ),
+      conditionalPanel(
+        condition = "input.plot_type != 'Clustering'",
+        selectInput(
+          "model_choice",
+          "Please choose model you want to show:",
+          choices = c("Model 1", "Model 2")
+        ),
+        conditionalPanel(
+          condition = "input.plot_type == 'Histogram'",
+          selectInput(
+            "x_var",
+            "Types for Variables in Histogram:",
+            choices = c("catVars" = "catVars",
+                        "numericVars" = "numericVars")
+          ),
+          selectInput(
+            "y_var",
+            "Enter the Variables Please in Histogram:",
+            choices = unique(Single_variables$model.type)
+          )
+        )
+      ),
+      conditionalPanel(
+        condition = "input.plot_type == 'Clustering'",
+        sliderInput(
+          "k_value",
+          "Select k value",
+          min = 2,
+          max = 5,
+          value = 3
+        )
+      )
+    ),
+    mainPanel(plotOutput("Histogram_Plot"))
+  )
+)
+
+# Define server logic
+server <- function(input, output, session) {
+  observeEvent(input$plot_type, {
+    if (input$plot_type == "Histogram") {
+      shinyjs::hide("model_choice")
+    } else {
+      shinyjs::show("model_choice")
+      
+      if (is.null(input$model_choice)) {
+        updateSelectInput(session, "model_choice", selected = "Model 1")
+      }
+    }
+  })
+  
+  observe({
+    # Check the value of x_var
+    if (input$x_var == "catVars") {
+      # Update y_var options for catVars
+      updateSelectInput(session, "y_var",
+                        choices = c("category", "Country"))
+    } else if (input$x_var == "numericVars") {
+      # Update y_var options for numericVars
+      updateSelectInput(
+        session,
+        "y_var",
+        choices = c(
+          "Unemployment.rate",
+          "Urban_population",
+          "Population",
+          "Gross.tertiary.education.enrollment….",
+          "subscribers_for_last_30_days",
+          "uploads",
+          "created_year",
+          "subscribers",
+          "video.views",
+          "video_views_for_the_last_30_days"
+        )
+      )
+    }
+  })
+  
+  output$Histogram_Plot <- renderPlot({
+    if (input$plot_type == "Clustering") {
+      set.seed(123)
+      km_result <-
+        kmeans(scaled_df,
+               centers = as.integer(input$k_value),
+               nstart = 25)
+      df_cluster <-
+        cbind(data_for_clustering, cluster = as.factor(km_result$cluster))
+      
+      pca_result <-
+        prcomp(df_cluster[,-ncol(df_cluster)], scale = TRUE)
+      pca_data <- as.data.frame(pca_result$x[, 1:2])
+      pca_data$cluster <- df_cluster$cluster
+      
+      return(ggplot(pca_data, aes(
+        x = PC1, y = PC2, color = cluster
+      )) +
+        geom_point() +
+        theme_minimal())
+      
+    }
+    
+    else if (input$plot_type == "Histogram") {
+      # Filter the data based on the selected variable
+      selected_data <-
+        Single_variables[Single_variables$model.type == input$y_var, ]
+      
+      long_data <-
+        reshape2::melt(
+          selected_data,
+          id.vars = c("model.type", "model.name"),
+          measure.vars = c("train.auc", "cal.auc")
+        )
+      
+      return(
+        ggplot(long_data) +
+          geom_bar(
+            aes(x = variable, y = value, fill = variable),
+            stat = "identity",
+            position = "dodge"
+          ) +
+          geom_text(
+            aes(
+              x = variable,
+              y = value + 0.05,
+              label = sprintf("%.3f", value)
+            ),
+            position = position_dodge(width = 0.7)
+          ) +
+          labs(
+            title = paste("AUC Values for", input$y_var),
+            x = "AUC",
+            y = "Value"
+          ) +
+          scale_fill_manual(
+            values = c(
+              "train.auc" = "#6CAEFF",
+              "cal.auc" = "#FF6C6C"
+            ),
+            labels = c("Train AUC", "Calibration AUC")
+          ) +
+          theme_minimal()
+      )
+      
+    } else if (input$plot_type == "Scatter Plot for Decision Tree") {
+      filtered_data <-
+        Decision_Tree[Decision_Tree$Model == input$model_choice, ]
+      
+      
+      long_data <-
+        reshape2::melt(
+          filtered_data,
+          id.vars = c("Model", "Set"),
+          measure.vars = c("Accuracy", "Precision", "Recall", "F1_Score")
+        )
+      
+      return(
+        ggplot(
+          long_data,
+          aes(
+            x = variable,
+            y = value,
+            color = Set,
+            group = Set
+          )
+        ) +
+          geom_point(aes(shape = Set), size = 4) +
+          geom_line() +
+          labs(
+            title = paste("Metrics for Decision Tree -", input$model_choice),
+            x = "Evaluating",
+            y = "Value"
+          ) +
+          theme_minimal() +
+          scale_shape_manual(values = c(16, 17, 18))
+      )
+    } else if (input$plot_type == "Scatter Plot for SVM") {
+      filtered_data <- SVM[SVM$Model == input$model_choice, ]
+      
+      
+      
+      long_data <-
+        reshape2::melt(
+          filtered_data,
+          id.vars = c("Model", "DataSet"),
+          measure.vars = c("Accuracy", "Precision", "Recall", "F1_Score")
+        )
+      
+      return(
+        ggplot(
+          long_data,
+          aes(
+            x = variable,
+            y = value,
+            color = DataSet,
+            group = DataSet
+          )
+        ) +
+          geom_point(aes(shape = DataSet), size = 4) +
+          geom_line() +
+          labs(
+            title = paste("Metrics for SVM -", input$model_choice),
+            x = "Evaluating",
+            y = "Value"
+          ) +
+          theme_minimal() +
+          scale_shape_manual(values = c(19, 20))
+      )
+    }
+  })
+}
+
+
+
+# Run the application
+shinyApp(ui = ui, server = server)
+
+
+```
+
+
+
